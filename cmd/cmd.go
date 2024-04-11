@@ -30,12 +30,12 @@ import (
 	"golang.org/x/exp/slices"
 	"golang.org/x/term"
 
-	"github.com/jmorganca/ollama/api"
-	"github.com/jmorganca/ollama/format"
-	"github.com/jmorganca/ollama/parser"
-	"github.com/jmorganca/ollama/progress"
-	"github.com/jmorganca/ollama/server"
-	"github.com/jmorganca/ollama/version"
+	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/parser"
+	"github.com/ollama/ollama/progress"
+	"github.com/ollama/ollama/server"
+	"github.com/ollama/ollama/version"
 )
 
 func CreateHandler(cmd *cobra.Command, args []string) error {
@@ -194,7 +194,9 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	request := api.CreateRequest{Name: args[0], Modelfile: string(modelfile)}
+	quantization, _ := cmd.Flags().GetString("quantization")
+
+	request := api.CreateRequest{Name: args[0], Modelfile: string(modelfile), Quantization: quantization}
 	if err := client.Create(cmd.Context(), &request, fn); err != nil {
 		return err
 	}
@@ -213,7 +215,10 @@ func createBlob(cmd *cobra.Command, client *api.Client, path string) (string, er
 	if _, err := io.Copy(hash, bin); err != nil {
 		return "", err
 	}
-	bin.Seek(0, io.SeekStart)
+
+	if _, err := bin.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
 
 	digest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
 	if err = client.CreateBlob(cmd.Context(), digest, bin); err != nil {
@@ -223,6 +228,14 @@ func createBlob(cmd *cobra.Command, client *api.Client, path string) (string, er
 }
 
 func RunHandler(cmd *cobra.Command, args []string) error {
+	if os.Getenv("OLLAMA_MODELS") != "" {
+		return errors.New("OLLAMA_MODELS must only be set for 'ollama serve'")
+	}
+
+	if err := checkServerHeartbeat(cmd, args); err != nil {
+		return err
+	}
+
 	client, err := api.ClientFromEnvironment()
 	if err != nil {
 		return err
@@ -932,6 +945,7 @@ func NewCLI() *cobra.Command {
 	}
 
 	createCmd.Flags().StringP("file", "f", "Modelfile", "Name of the Modelfile (default \"Modelfile\")")
+	createCmd.Flags().StringP("quantization", "q", "", "Quantization level.")
 
 	showCmd := &cobra.Command{
 		Use:     "show MODEL",
@@ -948,11 +962,10 @@ func NewCLI() *cobra.Command {
 	showCmd.Flags().Bool("system", false, "Show system message of a model")
 
 	runCmd := &cobra.Command{
-		Use:     "run MODEL [PROMPT]",
-		Short:   "Run a model",
-		Args:    cobra.MinimumNArgs(1),
-		PreRunE: checkServerHeartbeat,
-		RunE:    RunHandler,
+		Use:   "run MODEL [PROMPT]",
+		Short: "Run a model",
+		Args:  cobra.MinimumNArgs(1),
+		RunE:  RunHandler,
 	}
 
 	runCmd.Flags().Bool("verbose", false, "Show timings for response")
@@ -973,6 +986,7 @@ Environment Variables:
     OLLAMA_ORIGINS      A comma separated list of allowed origins.
     OLLAMA_MODELS       The path to the models directory (default is "~/.ollama/models")
     OLLAMA_KEEP_ALIVE   The duration that models stay loaded in memory (default is "5m")
+    OLLAMA_DEBUG        Set to 1 to enable additional debug logging
 `)
 
 	pullCmd := &cobra.Command{
