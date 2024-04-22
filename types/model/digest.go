@@ -1,9 +1,6 @@
 package model
 
 import (
-	"database/sql"
-	"database/sql/driver"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -44,38 +41,18 @@ func (d Digest) LogValue() slog.Value {
 }
 
 var (
-	_ driver.Valuer  = Digest{}
-	_ sql.Scanner    = (*Digest)(nil)
 	_ slog.LogValuer = Digest{}
 )
-
-// Scan implements the sql.Scanner interface.
-func (d *Digest) Scan(src any) error {
-	if d.IsValid() {
-		return errors.New("model.Digest: illegal Scan on valid Digest")
-	}
-	switch v := src.(type) {
-	case string:
-		*d = ParseDigest(v)
-		return nil
-	case []byte:
-		*d = ParseDigest(string(v))
-		return nil
-	}
-	return fmt.Errorf("model.Digest: invalid Scan source %T", src)
-}
-
-// Value implements the driver.Valuer interface.
-func (d Digest) Value() (driver.Value, error) {
-	return d.String(), nil
-}
 
 // ParseDigest parses a string in the form of "<digest-type>-<digest>" into a
 // Digest.
 func ParseDigest(s string) Digest {
 	typ, digest, ok := strings.Cut(s, "-")
+	if !ok {
+		typ, digest, ok = strings.Cut(s, ":")
+	}
 	if ok && isValidDigestType(typ) && isValidHex(digest) {
-		return Digest{s: s}
+		return Digest{s: fmt.Sprintf("%s-%s", typ, digest)}
 	}
 	return Digest{}
 }

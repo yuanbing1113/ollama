@@ -3,9 +3,11 @@ package model
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"hash/maphash"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -25,11 +27,17 @@ var (
 
 // Defaults
 const (
-	// DefaultMask is the default mask used by [Name.DisplayShortest].
-	DefaultMask = "registry.ollama.ai/library/_:latest"
+	// MaskDefault is the default mask used by [Name.DisplayShortest].
+	MaskDefault = "registry.ollama.ai/library/?:latest"
+
+	// MaskNothing is a mask that masks nothing.
+	MaskNothing = "?/?/?:?"
 
 	// DefaultFill is the default fill used by [ParseName].
-	DefaultFill = "registry.ollama.ai/library/_:latest"
+	FillDefault = "registry.ollama.ai/library/?:latest+Q4_0"
+
+	// FillNothing is a fill that fills nothing.
+	FillNothing = "?/?/?:?+?"
 )
 
 const MaxNamePartLen = 128
@@ -47,11 +55,11 @@ const (
 	PartBuild
 	PartDigest
 
-	// Invalid is a special part that is used to indicate that a part is
-	// invalid. It is not a valid part of a Name.
-	//
-	// It should be kept as the last part in the list.
-	PartInvalid
+	// NumParts is the number of parts in a Name. In this list, it must
+	// follow the final part.
+	NumParts
+
+	PartExtraneous = -1
 )
 
 var kindNames = map[PartKind]string{
@@ -61,7 +69,6 @@ var kindNames = map[PartKind]string{
 	PartTag:       "Tag",
 	PartBuild:     "Build",
 	PartDigest:    "Digest",
-	PartInvalid:   "Invalid",
 }
 
 func (k PartKind) String() string {
@@ -96,11 +103,9 @@ func (k PartKind) String() string {
 // The parts can be obtained in their original form by calling [Name.Parts].
 //
 // To check if a Name has at minimum a valid model part, use [Name.IsValid].
-//
-// To make a Name by filling in missing parts from another Name, use [Fill].
 type Name struct {
 	_     structs.Incomparable
-	parts [6]string // host, namespace, model, tag, build, digest
+	parts [NumParts]string // host, namespace, model, tag, build, digest
 
 	// TODO(bmizerany): track offsets and hold s (raw string) here? We
 	// could pack the offsets all into a single uint64 since the first
@@ -109,7 +114,7 @@ type Name struct {
 	// and mean zero allocations for String.
 }
 
-// ParseNameFill parses s into a Name, and returns the result of filling it with
+// ParseName parses s into a Name, and returns the result of filling it with
 // defaults. The input string must be a valid string
 // representation of a model name in the form:
 //
@@ -139,19 +144,19 @@ type Name struct {
 //
 // It returns the zero value if any part is invalid.
 //
-// As a rule of thumb, an valid name is one that can be round-tripped with
-// the [Name.String] method. That means ("x+") is invalid because
-// [Name.String] will not print a "+" if the build is empty.
+// # Fills
 //
-// For more about filling in missing parts, see [Fill].
-func ParseNameFill(s, defaults string) Name {
+// For any valid s, the fill string is used to fill in missing parts of the
+// Name. The fill string must be a valid Name with the exception that any part
+// may be the string ("?"), which will not be considered for filling.
+func ParseName(s, fill string) Name {
 	var r Name
 	parts(s)(func(kind PartKind, part string) bool {
-		if kind == PartInvalid {
+		if kind == PartDigest && !ParseDigest(part).IsValid() {
 			r = Name{}
 			return false
 		}
-		if kind == PartDigest && !ParseDigest(part).IsValid() {
+		if kind == PartExtraneous || !IsValidNamePart(kind, part) {
 			r = Name{}
 			return false
 		}
@@ -159,34 +164,51 @@ func ParseNameFill(s, defaults string) Name {
 		return true
 	})
 	if r.IsValid() || r.IsResolved() {
-		if defaults == "" {
-			return r
-		}
-		return Fill(r, ParseNameFill(defaults, ""))
+		return fillName(r, fill)
 	}
 	return Name{}
 }
 
-// ParseName is equal to ParseNameFill(s, DefaultFill).
-func ParseName(s string) Name {
-	return ParseNameFill(s, DefaultFill)
+func parseMask(s string) Name {
+	var r Name
+	parts(s)(func(kind PartKind, part string) bool {
+		if part == "?" {
+			// mask part; treat as empty but valid
+			return true
+		}
+		if !IsValidNamePart(kind, part) {
+			panic(fmt.Errorf("invalid mask part %s: %q", kind, part))
+		}
+		r.parts[kind] = part
+		return true
+	})
+	return r
 }
 
-func MustParseNameFill(s, defaults string) Name {
-	r := ParseNameFill(s, "")
+func MustParseName(s, fill string) Name {
+	r := ParseName(s, fill)
 	if !r.IsValid() {
-		panic("model.MustParseName: invalid name: " + s)
+		panic("invalid Name: " + s)
 	}
 	return r
 }
 
-// Fill fills in the missing parts of dst with the parts of src.
+// fillName fills in the missing parts of dst with the parts of src.
 //
 // The returned Name will only be valid if dst is valid.
-func Fill(dst, src Name) Name {
-	var r Name
+//
+// It skipps fill parts that are "?".
+func fillName(r Name, fill string) Name {
+	fill = cmp.Or(fill, FillDefault)
+	f := parseMask(fill)
+	if fill != FillNothing && f.IsZero() {
+		panic("invalid fill")
+	}
 	for i := range r.parts {
-		r.parts[i] = cmp.Or(dst.parts[i], src.parts[i])
+		if f.parts[i] == "?" {
+			continue
+		}
+		r.parts[i] = cmp.Or(r.parts[i], f.parts[i])
 	}
 	return r
 }
@@ -212,7 +234,7 @@ func (r Name) MapHash() uint64 {
 	// correctly hash the parts with case insensitive comparison
 	var h maphash.Hash
 	h.SetSeed(mapHashSeed)
-	for _, part := range r.Parts() {
+	for _, part := range r.parts {
 		// downcase the part for hashing
 		for i := range part {
 			c := part[i]
@@ -231,32 +253,59 @@ func (r Name) slice(from, to PartKind) Name {
 	return v
 }
 
-// DisplayShortest returns the shortest possible display string in form:
+// DisplayShortest returns the shortest possible, masked display string in form:
 //
 //	[host/][<namespace>/]<model>[:<tag>]
 //
-// The host is omitted if it is the mask host is the same as r.
-// The namespace is omitted if the host and the namespace are the same as r.
-// The tag is omitted if it is the mask tag is the same as r.
+// # Masks
+//
+// The mask is a string that specifies which parts of the name to omit based
+// on case-insensitive comparison. [Name.DisplayShortest] omits parts of the name
+// that are the same as the mask, moving from left to right until the first
+// unequal part is found. It then moves right to left until the first unequal
+// part is found. The result is the shortest possible display string.
+//
+// Unlike a [Name] the mask can contain "?" characters which are treated as
+// wildcards. A "?" will never match a part of the name, since a valid name
+// can never contain a "?" character.
+//
+// For example: Given a Name ("registry.ollama.ai/library/mistral:latest") masked
+// with ("registry.ollama.ai/library/?:latest") will produce the display string
+// ("mistral").
+//
+// If mask is the empty string, then [MaskDefault] is used.
+//
+// DisplayShortest panics if the mask is not the empty string, MaskNothing, and
+// invalid.
+//
+// # Builds
+//
+// For now, DisplayShortest does consider the build or return one in the
+// result. We can lift this restriction when needed.
 func (r Name) DisplayShortest(mask string) string {
-	mask = cmp.Or(mask, DefaultMask)
-	d := ParseName(mask)
-	if !d.IsValid() {
-		panic("mask is an invalid Name")
+	mask = cmp.Or(mask, MaskDefault)
+	d := parseMask(mask)
+	if mask != MaskNothing && r.IsZero() {
+		panic("invalid Name")
 	}
-	equalSlice := func(form, to PartKind) bool {
-		return r.slice(form, to).EqualFold(d.slice(form, to))
+	for i := range PartTag {
+		if !strings.EqualFold(r.parts[i], d.parts[i]) {
+			break
+		}
+		r.parts[i] = ""
 	}
-	if equalSlice(PartHost, PartNamespace) {
-		r.parts[PartNamespace] = ""
+	for i := PartTag; i >= 0; i-- {
+		if !strings.EqualFold(r.parts[i], d.parts[i]) {
+			break
+		}
+		r.parts[i] = ""
 	}
-	if equalSlice(PartHost, PartHost) {
-		r.parts[PartHost] = ""
-	}
-	if equalSlice(PartTag, PartTag) {
-		r.parts[PartTag] = ""
-	}
-	return r.slice(PartHost, PartTag).String()
+	return r.slice(PartHost, PartTag).DisplayLong()
+}
+
+// DisplayLongest returns the result of r.DisplayShortest(MaskNothing).
+func (r Name) DisplayLongest() string {
+	return r.DisplayShortest(MaskNothing)
 }
 
 var seps = [...]string{
@@ -303,15 +352,12 @@ var builderPool = sync.Pool{
 	},
 }
 
-// String returns the fullest possible display string in form:
+// DisplayLong returns the fullest possible display string in form:
 //
 //	<host>/<namespace>/<model>:<tag>+<build>
 //
 // If any part is missing, it is omitted from the display string.
-//
-// For the fullest possible display string without the build, use
-// [Name.DisplayFullest].
-func (r Name) String() string {
+func (r Name) DisplayLong() string {
 	b := builderPool.Get().(*strings.Builder)
 	defer builderPool.Put(b)
 	b.Reset()
@@ -321,14 +367,14 @@ func (r Name) String() string {
 }
 
 // GoString implements fmt.GoStringer. It returns a string suitable for
-// debugging and logging. It is similar to [Name.String] but it always
+// debugging and logging. It is similar to [Name.DisplayLong] but it always
 // returns a string that includes all parts of the Name, with missing parts
 // replaced with a ("?").
 func (r Name) GoString() string {
 	for i := range r.parts {
 		r.parts[i] = cmp.Or(r.parts[i], "?")
 	}
-	return r.String()
+	return r.DisplayLong()
 }
 
 // LogValue implements slog.Valuer.
@@ -393,14 +439,11 @@ func downcase(r rune) rune {
 	return r
 }
 
-// TODO(bmizerany): driver.Value? (MarshalText etc should be enough)
-
-// Parts returns the parts of the Name in order of concreteness.
-//
-// The length of the returned slice is always 5.
-func (r Name) Parts() []string {
-	return slices.Clone(r.parts[:])
-}
+func (r Name) Host() string      { return r.parts[PartHost] }
+func (r Name) Namespace() string { return r.parts[PartNamespace] }
+func (r Name) Model() string     { return r.parts[PartModel] }
+func (r Name) Build() string     { return r.parts[PartBuild] }
+func (r Name) Tag() string       { return r.parts[PartTag] }
 
 // iter_Seq2 is a iter.Seq2 defined here to avoid the current build
 // restrictions in the go1.22 iter package requiring the
@@ -418,25 +461,14 @@ type iter_Seq2[A, B any] func(func(A, B) bool)
 // No other normalizations are performed.
 func parts(s string) iter_Seq2[PartKind, string] {
 	return func(yield func(PartKind, string) bool) {
-		//nolint:gosimple
 		if strings.HasPrefix(s, "http://") {
-			s = s[len("http://"):]
-		}
-		//nolint:gosimple
-		if strings.HasPrefix(s, "https://") {
-			s = s[len("https://"):]
+			s = strings.TrimPrefix(s, "http://")
+		} else {
+			s = strings.TrimPrefix(s, "https://")
 		}
 
 		if len(s) > MaxNamePartLen || len(s) == 0 {
 			return
-		}
-
-		yieldValid := func(kind PartKind, part string) bool {
-			if !isValidPart(kind, part) {
-				yield(PartInvalid, "")
-				return false
-			}
-			return yield(kind, part)
 		}
 
 		numConsecutiveDots := 0
@@ -448,7 +480,7 @@ func parts(s string) iter_Seq2[PartKind, string] {
 				// we don't keep spinning on it, waiting for
 				// an isInValidPart check which would scan
 				// over it again.
-				yield(PartInvalid, "")
+				yield(state, s[i+1:j])
 				return
 			}
 
@@ -456,7 +488,7 @@ func parts(s string) iter_Seq2[PartKind, string] {
 			case '@':
 				switch state {
 				case PartDigest:
-					if !yieldValid(PartDigest, s[i+1:j]) {
+					if !yield(PartDigest, s[i+1:j]) {
 						return
 					}
 					if i == 0 {
@@ -468,73 +500,71 @@ func parts(s string) iter_Seq2[PartKind, string] {
 					}
 					state, j, partLen = PartBuild, i, 0
 				default:
-					yield(PartInvalid, "")
+					yield(PartExtraneous, s[i+1:j])
 					return
 				}
 			case '+':
 				switch state {
 				case PartBuild, PartDigest:
-					if !yieldValid(PartBuild, s[i+1:j]) {
+					if !yield(PartBuild, s[i+1:j]) {
 						return
 					}
 					state, j, partLen = PartTag, i, 0
 				default:
-					yield(PartInvalid, "")
+					yield(PartExtraneous, s[i+1:j])
 					return
 				}
 			case ':':
 				switch state {
 				case PartTag, PartBuild, PartDigest:
-					if !yieldValid(PartTag, s[i+1:j]) {
+					if !yield(PartTag, s[i+1:j]) {
 						return
 					}
 					state, j, partLen = PartModel, i, 0
+				case PartHost:
+					// noop: support for host:port
 				default:
-					yield(PartInvalid, "")
+					yield(PartExtraneous, s[i+1:j])
 					return
 				}
 			case '/':
 				switch state {
 				case PartModel, PartTag, PartBuild, PartDigest:
-					if !yieldValid(PartModel, s[i+1:j]) {
+					if !yield(PartModel, s[i+1:j]) {
 						return
 					}
 					state, j = PartNamespace, i
 				case PartNamespace:
-					if !yieldValid(PartNamespace, s[i+1:j]) {
+					if !yield(PartNamespace, s[i+1:j]) {
 						return
 					}
 					state, j, partLen = PartHost, i, 0
 				default:
-					yield(PartInvalid, "")
+					yield(PartExtraneous, s[i+1:j])
 					return
 				}
 			default:
 				if s[i] == '.' {
 					if numConsecutiveDots++; numConsecutiveDots > 1 {
-						yield(PartInvalid, "")
+						yield(state, "")
 						return
 					}
 				} else {
 					numConsecutiveDots = 0
 				}
-				if !isValidByteFor(state, s[i]) {
-					yield(PartInvalid, "")
-					return
-				}
 			}
 		}
 
 		if state <= PartNamespace {
-			yieldValid(state, s[:j])
+			yield(state, s[:j])
 		} else {
-			yieldValid(PartModel, s[:j])
+			yield(PartModel, s[:j])
 		}
 	}
 }
 
 func (r Name) IsZero() bool {
-	return r.parts == [6]string{}
+	return r.parts == [NumParts]string{}
 }
 
 // IsValid reports if a model has at minimum a valid model part.
@@ -544,13 +574,104 @@ func (r Name) IsValid() bool {
 	return r.parts[PartModel] != ""
 }
 
-// isValidPart reports if s contains all valid characters for the given
-// part kind.
-func isValidPart(kind PartKind, s string) bool {
+// ParseNameFromURLPath parses forms of a URL path into a Name. Specifically,
+// it trims any leading "/" and then calls [ParseName] with fill.
+func ParseNameFromURLPath(s, fill string) Name {
+	s = strings.TrimPrefix(s, "/")
+	return ParseName(s, fill)
+}
+
+// URLPath returns a complete, canonicalized, relative URL path using the parts of a
+// complete Name.
+//
+// The parts maintain their original case.
+//
+// Example:
+//
+//	ParseName("example.com/namespace/model:tag+build").URLPath() // returns "/example.com/namespace/model:tag"
+func (r Name) URLPath() string {
+	return r.DisplayShortest(MaskNothing)
+}
+
+// ParseNameFromFilepath parses a file path into a Name. The input string must be a
+// valid file path representation of a model name in the form:
+//
+//	host/namespace/model/tag/build
+//
+// The zero valid is returned if s does not contain all path elements
+// leading up to the model part, or if any path element is an invalid part
+// for the its corresponding part kind.
+//
+// The fill string is used to fill in missing parts of any constructed Name.
+// See [ParseName] for more information on the fill string.
+func ParseNameFromFilepath(s, fill string) Name {
+	var r Name
+	for i := range PartBuild + 1 {
+		part, rest, _ := strings.Cut(s, string(filepath.Separator))
+		if !IsValidNamePart(i, part) {
+			return Name{}
+		}
+		r.parts[i] = part
+		s = rest
+		if s == "" {
+			break
+		}
+	}
+	if s != "" {
+		return Name{}
+	}
+	if !r.IsValid() {
+		return Name{}
+	}
+	return fillName(r, fill)
+}
+
+// Filepath returns a complete, canonicalized, relative file path using the
+// parts of a complete Name.
+//
+// Each parts is downcased, except for the build part which is upcased.
+//
+// Example:
+//
+//	ParseName("example.com/namespace/model:tag+build").Filepath() // returns "example.com/namespace/model/tag/BUILD"
+func (r Name) Filepath() string {
+	for i := range r.parts {
+		if PartKind(i) == PartBuild {
+			r.parts[i] = strings.ToUpper(r.parts[i])
+		} else {
+			r.parts[i] = strings.ToLower(r.parts[i])
+		}
+	}
+	return filepath.Join(r.parts[:]...)
+}
+
+// FilepathNoBuild returns a complete, canonicalized, relative file path using
+// the parts of a complete Name, but without the build part.
+func (r Name) FilepathNoBuild() string {
+	for i := range PartBuild {
+		r.parts[i] = strings.ToLower(r.parts[i])
+	}
+	return filepath.Join(r.parts[:PartBuild]...)
+}
+
+// IsValidNamePart reports if s contains all valid characters for the given
+// part kind and is under MaxNamePartLen bytes.
+func IsValidNamePart(kind PartKind, s string) bool {
+	if len(s) > MaxNamePartLen {
+		return false
+	}
 	if s == "" {
 		return false
 	}
+	var consecutiveDots int
 	for _, c := range []byte(s) {
+		if c == '.' {
+			if consecutiveDots++; consecutiveDots >= 2 {
+				return false
+			}
+		} else {
+			consecutiveDots = 0
+		}
 		if !isValidByteFor(kind, c) {
 			return false
 		}
@@ -561,6 +682,9 @@ func isValidPart(kind PartKind, s string) bool {
 func isValidByteFor(kind PartKind, c byte) bool {
 	if kind == PartNamespace && c == '.' {
 		return false
+	}
+	if kind == PartHost && c == ':' {
+		return true
 	}
 	if c == '.' || c == '-' {
 		return true
