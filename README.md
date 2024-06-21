@@ -6,7 +6,7 @@
 
 [![Discord](https://dcbadge.vercel.app/api/server/ollama?style=flat&compact=true)](https://discord.gg/ollama)
 
-Get up and running with large language models locally.
+Get up and running with large language models.
 
 ### macOS
 
@@ -51,15 +51,17 @@ Here are some example models that can be downloaded:
 | ------------------ | ---------- | ----- | ------------------------------ |
 | Llama 3            | 8B         | 4.7GB | `ollama run llama3`            |
 | Llama 3            | 70B        | 40GB  | `ollama run llama3:70b`        |
-| Phi-3              | 3.8B       | 2.3GB | `ollama run phi3`              |
+| Phi 3 Mini         | 3.8B       | 2.3GB | `ollama run phi3`              |
+| Phi 3 Medium       | 14B        | 7.9GB | `ollama run phi3:medium`       |
+| Gemma              | 2B         | 1.4GB | `ollama run gemma:2b`          |
+| Gemma              | 7B         | 4.8GB | `ollama run gemma:7b`          |
 | Mistral            | 7B         | 4.1GB | `ollama run mistral`           |
+| Moondream 2        | 1.4B       | 829MB | `ollama run moondream`         |
 | Neural Chat        | 7B         | 4.1GB | `ollama run neural-chat`       |
 | Starling           | 7B         | 4.1GB | `ollama run starling-lm`       |
 | Code Llama         | 7B         | 3.8GB | `ollama run codellama`         |
 | Llama 2 Uncensored | 7B         | 3.8GB | `ollama run llama2-uncensored` |
 | LLaVA              | 7B         | 4.5GB | `ollama run llava`             |
-| Gemma              | 2B         | 1.4GB | `ollama run gemma:2b`          |
-| Gemma              | 7B         | 4.8GB | `ollama run gemma:7b`          |
 | Solar              | 10.7B      | 6.1GB | `ollama run solar`             |
 
 > Note: You should have at least 8 GB of RAM available to run the 7B models, 16 GB to run the 13B models, and 32 GB to run the 33B models.
@@ -192,25 +194,7 @@ ollama list
 
 ## Building
 
-Install `cmake` and `go`:
-
-```
-brew install cmake go
-```
-
-Then generate dependencies:
-
-```
-go generate ./...
-```
-
-Then build the binary:
-
-```
-go build .
-```
-
-More detailed instructions can be found in the [developer guide](https://github.com/ollama/ollama/blob/main/docs/development.md)
+See the [developer guide](https://github.com/ollama/ollama/blob/main/docs/development.md)
 
 ### Running local builds
 
@@ -299,6 +283,9 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Ollama RAG Chatbot](https://github.com/datvodinh/rag-chatbot.git) (Local Chat with multiple PDFs using Ollama and RAG)
 - [BrainSoup](https://www.nurgo-software.com/products/brainsoup) (Flexible native client with RAG & multi-agent automation)
 - [macai](https://github.com/Renset/macai) (macOS client for Ollama, ChatGPT, and other compatible API back-ends)
+- [Olpaka](https://github.com/Otacon/olpaka) (User-friendly Flutter Web App for Ollama)
+- [OllamaSpring](https://github.com/CrazyNeil/OllamaSpring) (Ollama Client for macOS)
+- [LLocal.in](https://github.com/kartikm7/llocal) (Easy to use Electron Desktop Client for Ollama)
 
 ### Terminal
 
@@ -321,6 +308,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [ShellOracle](https://github.com/djcopley/ShellOracle)
 - [tlm](https://github.com/yusufcanb/tlm)
 - [podman-ollama](https://github.com/ericcurtin/podman-ollama)
+- [gollama](https://github.com/sammcj/gollama)
 
 ### Database
 
@@ -338,11 +326,13 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [LangChain](https://python.langchain.com/docs/integrations/llms/ollama) and [LangChain.js](https://js.langchain.com/docs/modules/model_io/models/llms/integrations/ollama) with [example](https://js.langchain.com/docs/use_cases/question_answering/local_retrieval_qa)
 - [LangChainGo](https://github.com/tmc/langchaingo/) with [example](https://github.com/tmc/langchaingo/tree/main/examples/ollama-completion-example)
 - [LangChain4j](https://github.com/langchain4j/langchain4j) with [example](https://github.com/langchain4j/langchain4j-examples/tree/main/ollama-examples/src/main/java)
+- [LangChainRust](https://github.com/Abraxas-365/langchain-rust) with [example](https://github.com/Abraxas-365/langchain-rust/blob/main/examples/llm_ollama.rs)
 - [LlamaIndex](https://gpt-index.readthedocs.io/en/stable/examples/llm/ollama.html)
 - [LiteLLM](https://github.com/BerriAI/litellm)
 - [OllamaSharp for .NET](https://github.com/awaescher/OllamaSharp)
 - [Ollama for Ruby](https://github.com/gbaptista/ollama-ai)
 - [Ollama-rs for Rust](https://github.com/pepperoni21/ollama-rs)
+- [Ollama-hpp for C++](https://github.com/jmont-dev/ollama-hpp)
 - [Ollama4j for Java](https://github.com/amithkoujalgi/ollama4j)
 - [ModelFusion Typescript Library](https://modelfusion.dev/integration/model-provider/ollama)
 - [OllamaKit for Swift](https://github.com/kevinhermawan/OllamaKit)
@@ -360,6 +350,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Portkey](https://portkey.ai/docs/welcome/integration-guides/ollama)
 - [PromptingTools.jl](https://github.com/svilupp/PromptingTools.jl) with an [example](https://svilupp.github.io/PromptingTools.jl/dev/examples/working_with_ollama)
 - [LlamaScript](https://github.com/Project-Llama/llamascript)
+
 ### Mobile
 
 - [Enchanted](https://github.com/AugustDev/enchanted)
@@ -392,7 +383,9 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [AI ST Completion](https://github.com/yaroslavyaroslav/OpenAI-sublime-text) (Sublime Text 4 AI assistant plugin with Ollama support)
 - [Discord-Ollama Chat Bot](https://github.com/kevinthedang/discord-ollama) (Generalized TypeScript Discord Bot w/ Tuning Documentation)
 - [Discord AI chat/moderation bot](https://github.com/rapmd73/Companion) Chat/moderation bot written in python. Uses Ollama to create personalities.
+- [Headless Ollama](https://github.com/nischalj10/headless-ollama) (Scripts to automatically install ollama client & models on any OS for apps that depends on ollama server)
 
-### Supported backends 
+### Supported backends
+
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) project founded by Georgi Gerganov.
 
