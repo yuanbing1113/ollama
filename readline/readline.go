@@ -98,7 +98,7 @@ func (i *Instance) Readline() (string, error) {
 		showPlaceholder := !i.Pasting || i.Prompt.UseAlt
 		if buf.IsEmpty() && showPlaceholder {
 			ph := i.Prompt.placeholder()
-			fmt.Printf(ColorGrey + ph + fmt.Sprintf(CursorLeftN, len(ph)) + ColorDefault)
+			fmt.Print(ColorGrey + ph + CursorLeftN(len(ph)) + ColorDefault)
 		}
 
 		r, err := i.Terminal.Read()
@@ -120,11 +120,11 @@ func (i *Instance) Readline() (string, error) {
 					if i.History.Pos == i.History.Size() {
 						currentLineBuf = []rune(buf.String())
 					}
-					buf.Replace(i.History.Prev())
+					buf.Replace([]rune(i.History.Prev()))
 				}
 			case KeyDown:
 				if i.History.Pos < i.History.Size() {
-					buf.Replace(i.History.Next())
+					buf.Replace([]rune(i.History.Next()))
 					if i.History.Pos == i.History.Size() {
 						buf.Replace(currentLineBuf)
 					}
@@ -220,7 +220,7 @@ func (i *Instance) Readline() (string, error) {
 		case CharEnter, CharCtrlJ:
 			output := buf.String()
 			if output != "" {
-				i.History.Add([]rune(output))
+				i.History.Add(output)
 			}
 			buf.MoveToEnd()
 			fmt.Println()
