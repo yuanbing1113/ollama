@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/ml"
+	"github.com/ollama/ollama/model/input"
 )
 
 type testCase struct {
@@ -269,7 +270,7 @@ func testCache(t *testing.T, backend ml.Backend, cache Cache, tests []testCase) 
 			context := backend.NewContext()
 			defer context.Close()
 
-			err := cache.StartForward(context, test.pos, test.seqs)
+			err := cache.StartForward(context, input.Options{Positions: test.pos, Sequences: test.seqs})
 			if err != nil {
 				panic(err)
 			}
@@ -280,9 +281,7 @@ func testCache(t *testing.T, backend ml.Backend, cache Cache, tests []testCase) 
 
 			out, _, mask := cache.Get(context)
 
-			context.Forward(out)
-			context.Forward(mask)
-			context.Compute(out, mask)
+			context.Forward(out, mask).Compute(out, mask)
 
 			if !slices.Equal(out.Floats(), test.expected) || !slices.Equal(out.Shape(), test.expectedShape) || !slices.Equal(mask.Floats(), test.expectedMask) {
 				t.Errorf("TestCache: have %v (shape %v); want %v (shape %v); mask: have %v (shape %v) want %v", out.Floats(), out.Shape(), test.expected, test.expectedShape, mask.Floats(), mask.Shape(), test.expectedMask)
@@ -305,13 +304,17 @@ func (b *testBackend) NewContext() ml.Context {
 	return &testContext{}
 }
 
+func (b *testBackend) NewContextSize(int) ml.Context {
+	return &testContext{}
+}
+
 func (b *testBackend) SystemInfo() string {
 	return "not implemented"
 }
 
 type testContext struct{}
 
-func (c *testContext) Zeros(dtype ml.DType, shape ...int) ml.Tensor {
+func (c *testContext) Empty(dtype ml.DType, shape ...int) ml.Tensor {
 	total := 0
 
 	if len(shape) > 0 {
@@ -324,8 +327,12 @@ func (c *testContext) Zeros(dtype ml.DType, shape ...int) ml.Tensor {
 	return &testTensor{dtype: dtype, elementSize: 4, data: make([]float32, total), shape: shape}
 }
 
+func (c *testContext) Zeros(dtype ml.DType, shape ...int) ml.Tensor {
+	return c.Empty(dtype, shape...)
+}
+
 func (c *testContext) FromFloatSlice(s []float32, shape ...int) (ml.Tensor, error) {
-	t := c.Zeros(ml.DTypeF32, shape...).(*testTensor)
+	t := c.Empty(ml.DTypeF32, shape...).(*testTensor)
 
 	copy(t.data, s)
 
@@ -344,11 +351,15 @@ func (c *testContext) FromIntSlice(s []int32, shape ...int) (ml.Tensor, error) {
 	return out, nil
 }
 
-func (c *testContext) Forward(ml.Tensor) {}
+func (c *testContext) Input() ml.Context    { return c }
+func (c *testContext) Output() ml.Context   { return c }
+func (c *testContext) Layer(int) ml.Context { return c }
+
+func (c *testContext) Forward(...ml.Tensor) ml.Context { return c }
 
 func (c *testContext) Compute(...ml.Tensor) {}
 
-func (c *testContext) MaxTensors() int {
+func (c *testContext) MaxGraphNodes() int {
 	return 10
 }
 
@@ -393,7 +404,7 @@ func (t *testTensor) Floats() []float32 {
 }
 
 func (t *testTensor) Add(ctx ml.Context, t2 ml.Tensor) ml.Tensor {
-	out := ctx.Zeros(t.DType(), t.Shape()...).(*testTensor)
+	out := ctx.Empty(t.DType(), t.Shape()...).(*testTensor)
 
 	for i := range out.data {
 		out.data[i] = t.data[i] + t2.(*testTensor).data[i]
@@ -430,11 +441,19 @@ func (t *testTensor) Scale(ctx ml.Context, s float64) ml.Tensor {
 	panic("not implemented")
 }
 
+func (t *testTensor) AvgPool1D(ctx ml.Context, k, s, p int) ml.Tensor {
+	panic("not implemented")
+}
+
+func (t *testTensor) AvgPool2D(ctx ml.Context, k, s int, p float32) ml.Tensor {
+	panic("not implemented")
+}
+
 func (t *testTensor) Conv2D(ctx ml.Context, weight ml.Tensor, s0, s1, p0, p1, d0, d1 int) ml.Tensor {
 	panic("not implemented")
 }
 
-func (t *testTensor) RoPE(ctx ml.Context, positionIDs, ropeFactors ml.Tensor, dim uint32, base, scale float32) ml.Tensor {
+func (t *testTensor) RoPE(ctx ml.Context, positionIDs, ropeFactors ml.Tensor, dim, ropeType uint32, base, scale float32) ml.Tensor {
 	panic("not implemented")
 }
 
@@ -470,7 +489,7 @@ func (t *testTensor) View(ctx ml.Context, offset int, shape ...int) ml.Tensor {
 
 	context := &testContext{}
 
-	view := context.Zeros(t.dtype, s...).(*testTensor)
+	view := context.Empty(t.dtype, s...).(*testTensor)
 	view.data = t.data[offset : offset+len(view.data)]
 
 	return view
@@ -481,6 +500,10 @@ func (t *testTensor) Permute(ctx ml.Context, shape ...int) ml.Tensor {
 }
 
 func (t *testTensor) Contiguous(ctx ml.Context) ml.Tensor {
+	panic("not implemented")
+}
+
+func (t *testTensor) Set(ctx ml.Context, t2 ml.Tensor, offset int, strides ...int) ml.Tensor {
 	panic("not implemented")
 }
 

@@ -115,6 +115,9 @@ func EstimateGPULayers(gpus []discover.GpuInfo, f *ggml.GGML, projectors []strin
 		// multimodal models require at least 2048 context
 		opts.NumCtx = max(opts.NumCtx, 2048)
 	}
+	if projectorWeights == 0 && projectorGraph == 0 {
+		projectorWeights, projectorGraph = f.VisionGraphSize()
+	}
 
 	layers := f.Tensors().GroupLayers()
 	// add one layer worth of memory as a buffer
@@ -215,8 +218,8 @@ func EstimateGPULayers(gpus []discover.GpuInfo, f *ggml.GGML, projectors []strin
 		if blk, ok := layers[fmt.Sprintf("blk.%d", i)]; ok {
 			layerSize = blk.Size()
 			layerSize += kv / f.KV().BlockCount()
+			memoryWeights += blk.Size()
 		}
-		memoryWeights += layerSize
 
 		if opts.NumGPU >= 0 && layerCount >= opts.NumGPU {
 			// Stop allocating on GPU(s) once we hit the users target NumGPU
@@ -373,7 +376,7 @@ func (m MemoryEstimate) LogValue() slog.Value {
 				// memory of the weights
 				"total", format.HumanBytes2(m.memoryWeights),
 				// memory of repeating layers
-				"repeating", format.HumanBytes2(m.memoryWeights-m.memoryLayerOutput),
+				"repeating", format.HumanBytes2(m.memoryWeights),
 				// memory of non-repeating layers
 				"nonrepeating", format.HumanBytes2(m.memoryLayerOutput),
 			),
