@@ -100,6 +100,10 @@ func (kv KV) Float(key string, defaultValue ...float32) float32 {
 	return keyValue(kv, key, append(defaultValue, 0)...)
 }
 
+func (kv KV) Bool(key string, defaultValue ...bool) bool {
+	return keyValue(kv, key, append(defaultValue, false)...)
+}
+
 func (kv KV) Strings(key string, defaultValue ...[]string) []string {
 	r := keyValue(kv, key, &array{})
 	s := make([]string, r.size)
@@ -120,7 +124,20 @@ func (kv KV) Uints(key string, defaultValue ...[]uint32) []uint32 {
 	return s
 }
 
-func keyValue[T string | uint32 | uint64 | float32 | *array](kv KV, key string, defaultValue ...T) T {
+func (kv KV) Floats(key string, defaultValue ...[]float32) []float32 {
+	r := keyValue(kv, key, &array{})
+	s := make([]float32, r.size)
+	for i := range r.size {
+		s[i] = float32(r.values[i].(float32))
+	}
+	return s
+}
+
+func (kv KV) OllamaEngineRequired() bool {
+	return kv.Architecture() == "gemma3"
+}
+
+func keyValue[T string | uint32 | uint64 | float32 | *array | bool](kv KV, key string, defaultValue ...T) T {
 	if !strings.HasPrefix(key, "tokenizer.") && !strings.HasPrefix(key, "general.") {
 		key = kv.Architecture() + "." + key
 	}
@@ -207,11 +224,26 @@ func (t Tensor) block() (n int) {
 
 func (t Tensor) blockSize() uint64 {
 	switch t.Kind {
-	case 0, 1, 24, 25, 26, 27, 28, 30: // F32, F16, I8, I16, I32, I64, F64, BF16
+	case
+		0,  // F32
+		1,  // F16
+		24, // I8
+		25, // I16
+		26, // I32
+		27, // I64
+		28, // F64
+		30: // BF16
 		return 1
-	case 2, 3, 4, 5, 6, 7, 8, 9, 20: // Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, IQ4_NL
+	case
+		2,  // Q4_0
+		3,  // Q4_1
+		6,  // Q5_0
+		7,  // Q5_1
+		8,  // Q8_0
+		9,  // Q8_1
+		20: // IQ4_NL
 		return 32
-	default: // All others
+	default:
 		return 256
 	}
 }
@@ -235,7 +267,7 @@ func (t Tensor) typeSize() uint64 {
 	case 8: // Q8_0
 		return 2 + blockSize
 	case 9: // Q8_1
-		return 4 + 4 + blockSize
+		return 2 + 2 + blockSize
 	case 10: // Q2_K
 		return blockSize/16 + blockSize/4 + 2 + 2
 	case 11: // Q3_K
@@ -247,7 +279,7 @@ func (t Tensor) typeSize() uint64 {
 	case 14: // Q6_K
 		return blockSize/2 + blockSize/4 + blockSize/16 + 2
 	case 15: // Q8_K
-		return 2 + blockSize + 2*blockSize/16
+		return 4 + blockSize + 2*blockSize/16
 	case 16: // IQ2_XXS
 		return 2 + 2*blockSize/8
 	case 17: // IQ2_XS
@@ -276,6 +308,8 @@ func (t Tensor) typeSize() uint64 {
 		return 8
 	case 29: // IQ1_M
 		return blockSize/8 + blockSize/16 + blockSize/32
+	case 30: // BF16
+		return 2
 	default:
 		return 0
 	}
@@ -291,6 +325,10 @@ func (t Tensor) parameters() uint64 {
 
 func (t Tensor) Size() uint64 {
 	return t.parameters() * t.typeSize() / t.blockSize()
+}
+
+func (t Tensor) Type() string {
+	return fileType(t.Kind).String()
 }
 
 type container interface {
@@ -455,7 +493,7 @@ func (f GGML) GraphSize(context, batch uint64, kvCacheType string) (kv, partialO
 			// vocab graph
 			4*batch*(embedding+vocab)+embedding*vocab*105/128,
 		)
-	case "gemma", "gemma2":
+	case "gemma", "gemma2", "gemma3":
 		fullOffload = max(
 			4*batch*(embedding+vocab),
 			4*batch*(2+context+context*heads+2*embedding+2*embeddingHeadsK*heads),
@@ -542,6 +580,56 @@ func (f GGML) GraphSize(context, batch uint64, kvCacheType string) (kv, partialO
 	}
 
 	return
+}
+
+func (llm GGML) VisionGraphSize() (weights, graphSize uint64) {
+	if llm.KV().Uint("vision.block_count") == 0 {
+		return
+	}
+
+	for name, layer := range llm.Tensors().GroupLayers() {
+		if name == "v" || strings.HasPrefix(name, "v.") {
+			for _, tensor := range layer {
+				weights += tensor.Size()
+			}
+		}
+	}
+
+	imageSize := uint64(llm.KV().Uint("vision.image_size"))
+	patchSize := uint64(llm.KV().Uint("vision.patch_size"))
+	if patchSize == 0 {
+		slog.Warn("unknown patch size for vision model")
+		return
+	}
+
+	numChannels := uint64(llm.KV().Uint("vision.num_channels"))
+
+	numPatches := (imageSize / patchSize) * (imageSize / patchSize)
+	if _, ok := llm.Tensors().GroupLayers()["v"]["class_embd"]; ok {
+		numPatches++
+	}
+
+	headCount := uint64(llm.KV().Uint("vision.attention.head_count"))
+	embeddingLength := uint64(llm.KV().Uint("vision.embedding_length"))
+
+	switch llm.KV().Architecture() {
+	case "mllama":
+		numPaddedPatches := numPatches + 8 - (numPatches%8)%8
+
+		maxNumTiles := uint64(llm.KV().Uint("vision.max_num_tiles"))
+
+		graphSize = 4 * (8 +
+			imageSize*imageSize*numChannels*maxNumTiles +
+			embeddingLength*numPatches*maxNumTiles +
+			9*embeddingLength*numPaddedPatches*maxNumTiles +
+			numPaddedPatches*maxNumTiles*numPaddedPatches*maxNumTiles*headCount)
+	case "gemma3":
+		graphSize = 4 * (imageSize*imageSize*numChannels +
+			embeddingLength*patchSize +
+			numPatches*numPatches*headCount)
+	}
+
+	return weights, graphSize
 }
 
 // SupportsKVCacheType checks if the requested cache type is supported
