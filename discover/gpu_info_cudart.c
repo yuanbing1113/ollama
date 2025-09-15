@@ -1,6 +1,7 @@
 #ifndef __APPLE__  // TODO - maybe consider nvidia support on intel macs?
 
 #include <string.h>
+#include <inttypes.h>
 #include "gpu_info_cudart.h"
 
 void cudart_init(char *cudart_lib_path, cudart_init_resp_t *resp) {
@@ -58,7 +59,7 @@ void cudart_init(char *cudart_lib_path, cudart_init_resp_t *resp) {
     LOG(resp->ch.verbose, "cudaSetDevice err: %d\n", ret);
     UNLOAD_LIBRARY(resp->ch.handle);
     resp->ch.handle = NULL;
-    if (ret == CUDA_ERROR_INSUFFICIENT_DRIVER) {
+    if (ret == CUDART_ERROR_INSUFFICIENT_DRIVER) {
       resp->err = strdup("your nvidia driver is too old or missing.  If you have a CUDA GPU please upgrade to run ollama");
       return;
     }
@@ -68,18 +69,15 @@ void cudart_init(char *cudart_lib_path, cudart_init_resp_t *resp) {
   }
 
   int version = 0;
-  cudartDriverVersion_t driverVersion;
-  driverVersion.major = 0;
-  driverVersion.minor = 0;
 
   // Report driver version if we're in verbose mode, ignore errors
   ret = (*resp->ch.cudaDriverGetVersion)(&version);
   if (ret != CUDART_SUCCESS) {
     LOG(resp->ch.verbose, "cudaDriverGetVersion failed: %d\n", ret);
   } else {
-    driverVersion.major = version / 1000;
-    driverVersion.minor = (version - (driverVersion.major * 1000)) / 10;
-    LOG(resp->ch.verbose, "CUDA driver version: %d-%d\n", driverVersion.major, driverVersion.minor);
+    resp->ch.driver_major = version / 1000;
+    resp->ch.driver_minor = (version - (resp->ch.driver_major * 1000)) / 10;
+    LOG(resp->ch.verbose, "CUDA driver version: %d-%d\n", resp->ch.driver_major, resp->ch.driver_minor);
   }
 
   ret = (*resp->ch.cudaGetDeviceCount)(&resp->num_devices);
@@ -168,9 +166,9 @@ void cudart_bootstrap(cudart_handle_t h, int i, mem_info_t *resp) {
   resp->free = memInfo.free;
   resp->used = memInfo.used;
 
-  LOG(h.verbose, "[%s] CUDA totalMem %lu\n", resp->gpu_id, resp->total);
-  LOG(h.verbose, "[%s] CUDA freeMem %lu\n", resp->gpu_id, resp->free);
-  LOG(h.verbose, "[%s] CUDA usedMem %lu\n", resp->gpu_id, resp->used);
+  LOG(h.verbose, "[%s] CUDA totalMem %" PRId64 "\n", resp->gpu_id, resp->total);
+  LOG(h.verbose, "[%s] CUDA freeMem %" PRId64 "\n", resp->gpu_id, resp->free);
+  LOG(h.verbose, "[%s] CUDA usedMem %" PRId64 "\n", resp->gpu_id, resp->used);
   LOG(h.verbose, "[%s] Compute Capability %d.%d\n", resp->gpu_id, resp->major, resp->minor);
 }
 

@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	fs "github.com/ollama/ollama/fs/ggml"
+	"github.com/ollama/ollama/fs"
+	fsggml "github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/ml/backend/ggml"
 	"github.com/ollama/ollama/ml/nn"
@@ -117,29 +118,38 @@ func TestPopulateFields(t *testing.T) {
 }
 
 func TestPopulateFieldsAlternateName(t *testing.T) {
+	type nested struct {
+		Weight *nn.Linear `gguf:"a,alt:b"`
+	}
+
 	type fakeModel struct {
 		Input  *nn.Embedding `gguf:"input"`
 		Output *nn.Linear    `gguf:"output,alt:input"`
+		Nested *nested       `gguf:"nested"`
 	}
 
-	m := fakeModel{}
+	var m fakeModel
 	v := reflect.ValueOf(&m)
 	v.Elem().Set(populateFields(Base{b: &fakeBackend{
 		names: []string{
 			"input.weight",
+			"nested.b.weight",
 		},
 	}}, v.Elem()))
 
 	if diff := cmp.Diff(fakeModel{
 		Input:  &nn.Embedding{Weight: &fakeTensor{Name: "input.weight"}},
 		Output: &nn.Linear{Weight: &fakeTensor{Name: "input.weight"}},
+		Nested: &nested{
+			Weight: &nn.Linear{Weight: &fakeTensor{Name: "nested.b.weight"}},
+		},
 	}, m); diff != "" {
 		t.Errorf("populateFields() set incorrect values (-want +got):\n%s", diff)
 	}
 }
 
 func TestGetTextProcessor(t *testing.T) {
-	tp, err := getTextProcessor(fs.KV{})
+	tp, err := getTextProcessor(fsggml.KV{})
 	if err == nil {
 		t.Error("expected error")
 	} else if !strings.Contains(err.Error(), "unsupported model architecture") {
@@ -148,10 +158,10 @@ func TestGetTextProcessor(t *testing.T) {
 		t.Error("expected nil tp")
 	}
 
-	models["dummy"] = func(ml.Config) (Model, error) {
+	models["dummy"] = func(fs.Config) (Model, error) {
 		return notTextProcessorModel{}, nil
 	}
-	tp, err = getTextProcessor(fs.KV{"general.architecture": "dummy"})
+	tp, err = getTextProcessor(fsggml.KV{"general.architecture": "dummy"})
 	if err == nil {
 		t.Error("expected error")
 	} else if !strings.Contains(err.Error(), "not a TextProcessor") {
@@ -163,7 +173,7 @@ func TestGetTextProcessor(t *testing.T) {
 
 type notTextProcessorModel struct{}
 
-func (notTextProcessorModel) Forward(ml.Context, input.Options) (ml.Tensor, error) {
+func (notTextProcessorModel) Forward(ml.Context, input.Batch) (ml.Tensor, error) {
 	panic("unimplemented")
 }
 

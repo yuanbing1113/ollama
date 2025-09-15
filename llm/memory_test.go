@@ -25,7 +25,7 @@ func TestEstimateGPULayers(t *testing.T) {
 	defer f.Close()
 	inputLayerCount := 5
 
-	tensors := []ggml.Tensor{
+	tensors := []*ggml.Tensor{
 		{Name: "blk.0.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
 		{Name: "blk.1.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
 		{Name: "blk.2.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
@@ -61,7 +61,7 @@ func TestEstimateGPULayers(t *testing.T) {
 	projectors := []string{}
 	opts := api.DefaultOptions()
 	t.Run("cpu", func(t *testing.T) {
-		estimate := EstimateGPULayers(gpus, ggml, projectors, opts)
+		estimate := estimateGPULayers(gpus, ggml, projectors, opts, 1)
 		assert.Equal(t, 0, estimate.Layers)
 		assert.Equal(t, uint64(0), estimate.Graph)
 	})
@@ -88,7 +88,7 @@ func TestEstimateGPULayers(t *testing.T) {
 	// Nested array: GPU0 layer space, GPU1 layer space, expected gpu0, expected gpu1
 	for i, s := range []struct {
 		layer0, layer1   uint64
-		expect0, expect1 uint64
+		expect0, expect1 int
 	}{
 		{1, 1, 1, 1},
 		{2, 1, 2, 1},
@@ -112,9 +112,9 @@ func TestEstimateGPULayers(t *testing.T) {
 			gpus[1].FreeMemory += gpuMinimumMemory + layerSize + s.layer1*layerSize + 1
 			gpus[0].FreeMemory += max(graphFullOffload, graphPartialOffload)
 			gpus[1].FreeMemory += max(graphFullOffload, graphPartialOffload)
-			estimate := EstimateGPULayers(gpus, ggml, projectors, opts)
-			assert.Equal(t, int(s.expect0+s.expect1), estimate.Layers, "scenario %d: %v", i, s)
-			assert.Equal(t, fmt.Sprintf("%d,%d", s.expect0, s.expect1), estimate.TensorSplit, "scenario %d: %v", i, s)
+			estimate := estimateGPULayers(gpus, ggml, projectors, opts, 1)
+			assert.Equal(t, s.expect0+s.expect1, estimate.Layers, "scenario %d: %v", i, s)
+			assert.Equal(t, []int{s.expect0, s.expect1}, estimate.TensorSplit, "scenario %d: %v", i, s)
 			var layerSums uint64
 			for _, b := range estimate.GPUSizes {
 				layerSums += b
