@@ -31,9 +31,11 @@ type InputCache struct {
 	cache kvcache.Cache
 }
 
-func NewInputCache(model model.Model, kvCacheType string, kvSize int32, numSlots int, multiUserCache bool) (*InputCache, error) {
-	if kvSize/int32(numSlots) < 1 {
-		return nil, fmt.Errorf("must have at least one kv cache entry per parallel sequence (kv: %v parallel: %v)", kvSize, numSlots)
+func NewInputCache(model model.Model, kvCacheType string, kvSize int32, numSlots int, batchSize int, multiUserCache bool) (*InputCache, error) {
+	numCtx := kvSize / int32(numSlots)
+
+	if int(numCtx) < batchSize {
+		return nil, fmt.Errorf("kv size must be at least as large as batch size * parallel (kv: %v batch: %v parallel: %v)", kvSize, batchSize, numSlots)
 	}
 
 	slots := make([]InputCacheSlot, numSlots)
@@ -44,11 +46,11 @@ func NewInputCache(model model.Model, kvCacheType string, kvSize int32, numSlots
 
 	cache := model.Config().Cache
 	if cache != nil {
-		cache.Init(model.Backend(), kvCacheTypeFromStr(kvCacheType), kvSize)
+		cache.Init(model.Backend(), kvCacheTypeFromStr(kvCacheType), numSlots, int(numCtx), batchSize)
 	}
 
 	return &InputCache{
-		numCtx:         kvSize / int32(numSlots),
+		numCtx:         numCtx,
 		enabled:        cache != nil,
 		slots:          slots,
 		multiUserCache: multiUserCache,
@@ -68,11 +70,13 @@ func kvCacheTypeFromStr(s string) ml.DType {
 }
 
 func (c *InputCache) Close() {
-	c.cache.Close()
+	if c != nil && c.cache != nil {
+		c.cache.Close()
+	}
 }
 
 // Locking: Operations on InputCacheSlot (including finding one
-// through LoadCacheSlot) require a lock to be be held that serializes
+// through LoadCacheSlot) require a lock to be held that serializes
 // these operations with each other and processBatch
 
 type InputCacheSlot struct {
@@ -80,7 +84,7 @@ type InputCacheSlot struct {
 	Id int
 
 	// Inputs that are stored in the KV cache
-	Inputs []input.Input
+	Inputs []*input.Input
 
 	// is this cache actively being processed as part of a sequence?
 	InUse bool
@@ -89,7 +93,7 @@ type InputCacheSlot struct {
 	lastUsed time.Time
 }
 
-func (c *InputCache) LoadCacheSlot(prompt []input.Input) (*InputCacheSlot, []input.Input, error) {
+func (c *InputCache) LoadCacheSlot(prompt []*input.Input, cachePrompt bool) (*InputCacheSlot, []*input.Input, error) {
 	var slot *InputCacheSlot
 	var numPast int32
 	var err error
@@ -107,6 +111,10 @@ func (c *InputCache) LoadCacheSlot(prompt []input.Input) (*InputCacheSlot, []inp
 		return nil, nil, err
 	}
 
+	if !cachePrompt {
+		numPast = 0
+	}
+
 	slot.InUse = true
 	slot.lastUsed = time.Now()
 
@@ -116,6 +124,10 @@ func (c *InputCache) LoadCacheSlot(prompt []input.Input) (*InputCacheSlot, []inp
 	}
 
 	if c.cache != nil {
+		if numPast > 0 && !c.cache.CanResume(slot.Id, numPast) {
+			numPast = 0
+		}
+
 		err = c.cache.Remove(slot.Id, numPast, math.MaxInt32)
 		if err != nil {
 			// Some models don't support partial erasure
@@ -130,13 +142,13 @@ func (c *InputCache) LoadCacheSlot(prompt []input.Input) (*InputCacheSlot, []inp
 	slog.Debug("loading cache slot", "id", slot.Id, "cache", len(slot.Inputs), "prompt", len(prompt),
 		"used", numPast, "remaining", int32(len(prompt))-numPast)
 
+	slot.Inputs = prompt[:numPast]
 	prompt = prompt[numPast:]
-	slot.Inputs = slot.Inputs[:numPast]
 
 	return slot, prompt, nil
 }
 
-func (c *InputCache) findLongestCacheSlot(prompt []input.Input) (*InputCacheSlot, int32, error) {
+func (c *InputCache) findLongestCacheSlot(prompt []*input.Input) (*InputCacheSlot, int32, error) {
 	longest := int32(-1)
 	var longestSlot *InputCacheSlot
 
@@ -159,7 +171,7 @@ func (c *InputCache) findLongestCacheSlot(prompt []input.Input) (*InputCacheSlot
 	return longestSlot, longest, nil
 }
 
-func (c *InputCache) findBestCacheSlot(prompt []input.Input) (*InputCacheSlot, int32, error) {
+func (c *InputCache) findBestCacheSlot(prompt []*input.Input) (*InputCacheSlot, int32, error) {
 	oldest := time.Now()
 	var oldestSlot *InputCacheSlot
 
@@ -195,7 +207,7 @@ func (c *InputCache) findBestCacheSlot(prompt []input.Input) (*InputCacheSlot, i
 	if longest > 0 && longestSlot != oldestSlot {
 		slog.Debug("forking cache slot", "src", longestSlot.Id, "dst", oldestSlot.Id, "inputs", longest, "total",
 			len(longestSlot.Inputs))
-		oldestSlot.Inputs = make([]input.Input, longest)
+		oldestSlot.Inputs = make([]*input.Input, longest)
 		copy(oldestSlot.Inputs, longestSlot.Inputs[:longest])
 		if c.cache != nil {
 			c.cache.CopyPrefix(longestSlot.Id, oldestSlot.Id, longest)
@@ -205,7 +217,7 @@ func (c *InputCache) findBestCacheSlot(prompt []input.Input) (*InputCacheSlot, i
 	return oldestSlot, longest, nil
 }
 
-func countCommonPrefix(a []input.Input, b []input.Input) int32 {
+func countCommonPrefix(a []*input.Input, b []*input.Input) int32 {
 	var count int32
 
 	for i := range a {
@@ -223,6 +235,8 @@ func countCommonPrefix(a []input.Input, b []input.Input) int32 {
 	return count
 }
 
+// TODO(jessegross): If we need to reprocess the inputs we should ensure that
+// we don't split up a SameBatch
 func (c *InputCache) ShiftDiscard(inputLen int32, numKeep int32) int32 {
 	targetFree := (c.numCtx - numKeep) / 2
 	targetFree = max(targetFree, 1)
@@ -235,6 +249,14 @@ func (c *InputCache) ShiftDiscard(inputLen int32, numKeep int32) int32 {
 	}
 
 	return discard
+}
+
+type ErrReprocessInputs struct {
+	Inputs []*input.Input
+}
+
+func (e *ErrReprocessInputs) Error() string {
+	return fmt.Sprintf("kv cache shift not supported, inputs need reprocessing (input count: %v)", len(e.Inputs))
 }
 
 // Frees up space in the KV cache by deleting the oldest half of history and shifting
@@ -256,11 +278,23 @@ func (c *InputCache) ShiftCacheSlot(slot *InputCacheSlot, numKeep int32) error {
 	slog.Debug("context limit hit - shifting", "id", slot.Id, "limit", c.numCtx, "input", len(slot.Inputs),
 		"keep", numKeep, "discard", discard)
 
-	// TODO (jessegross): KV cache removal can fail for certain types of models
 	if c.cache != nil {
 		err := c.cache.Remove(slot.Id, numKeep, numKeep+discard)
 		if err != nil {
-			return fmt.Errorf("unable to remove old kv cache entries (id: %v, keep: %v discard: %v): %w", slot.Id, numKeep, discard, err)
+			slog.Debug("kv cache removal unsupported, clearing cache and returning inputs for reprocessing",
+				"id", slot.Id, "error", err)
+
+			// Create new input slice with preserved tokens (numKeep + remaining tokens after discard)
+			newInputs := make([]*input.Input, numKeep+inputLen-(numKeep+discard))
+			copy(newInputs[:numKeep], slot.Inputs[:numKeep])
+			copy(newInputs[numKeep:], slot.Inputs[numKeep+discard:])
+
+			// Reset the cache
+			_ = c.cache.Remove(slot.Id, 0, math.MaxInt32)
+			slot.Inputs = []*input.Input{}
+
+			// Return error with inputs that need to be reprocessed
+			return &ErrReprocessInputs{Inputs: newInputs}
 		}
 	}
 
